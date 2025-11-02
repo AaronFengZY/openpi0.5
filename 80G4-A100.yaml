@@ -1,0 +1,49 @@
+description: I'm writing to request the 8xA100 to process the data.
+
+target:
+  service: singularity
+  name: msrresrchvc
+  workspace_name: azmlws2igshare
+
+environment:
+  image: amlt-sing/acpt-torch2.7.1-py3.10-cuda11.8-ubuntu22.04
+  
+
+storage:
+  my_storage:
+    storage_account_name: igshare
+    container_name: v-zhifeng
+    mount_dir: /scratch/v-zhifeng
+  
+code:
+  local_dir: /home/v-zhifeng/HPE/huizhi/
+  ignore:
+    - agibotworld
+    
+jobs:
+- name: pi05_ft
+  sku: 80G4-A100
+  priority: high
+  preemptible: False
+  identity: managed
+  process_count_per_node: 1
+  command:
+  - cd /scratch/amlt_code/
+  - curl -L "https://aka.ms/downloadazcopy-v10-linux" -o azcopy_v10.tar.gz
+  - tar -xzf azcopy_v10.tar.gz
+  - cd azcopy_linux_amd64_*
+  - sudo mv azcopy /scratch/amlt_code/
+  - cd /scratch/amlt_code/
+  - pip install nvitop
+  - sudo apt-get update && sudo apt-get install -y vim
+  - sudo apt update
+  - sudo apt install git-lfs -y
+  - git lfs install
+  - cd Qwen3 && mkdir Qwen && cd Qwen
+  - git clone https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct
+  - cd /scratch/amlt_code/
+  - bash setup_env.sh
+  
+  - bash setup_env.sh --base_dir /scratch/amlt_code/
+  - XLA_PYTHON_CLIENT_PREALLOCATE=false XLA_PYTHON_CLIENT_MEM_FRACTION=0.85 HF_HUB_OFFLINE=1 uv run scripts/train.py pi05_agiworld --exp-name=agibotworld_fullrun1 --overwrite
+  - sleep infinifty

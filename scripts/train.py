@@ -16,6 +16,10 @@ import optax
 import tqdm_loggable.auto as tqdm
 import wandb
 
+
+import os
+from PIL import Image
+
 import openpi.models.model as _model
 import openpi.shared.array_typing as at
 import openpi.shared.nnx_utils as nnx_utils
@@ -225,6 +229,23 @@ def main(config: _config.TrainConfig):
     data_iter = iter(data_loader)
     batch = next(data_iter)
     logging.info(f"Initialized data loader:\n{training_utils.array_tree_to_info(batch)}")
+
+
+    # Debug: inspect image data in the batch
+    obs, act = batch
+    print("=== DEBUG: images keys ===", list(obs.images.keys()))
+    for k, v in obs.images.items():
+        arr = np.array(v)  # 通常是 [B, H, W, 3] 或 list/tuple 再堆叠
+        print(f"[{k}] type={type(v)} -> array.shape={arr.shape}, dtype={arr.dtype}")
+    
+    print("Image keys order in batch[0].images:")
+    print(list(batch[0].images.keys()))
+
+    for k in ["base_0_rgb", "left_wrist_0_rgb", "right_wrist_0_rgb"]:
+        m = np.array(obs.image_masks[k])
+        print(f"[mask] {k}: {m.sum()} / {m.size} frames valid")
+        img_mean = np.mean(np.array(obs.images[k]))
+        print(f"[{k}] mean pixel value: {img_mean:.6f}")
 
     # Log images from first batch to sanity check.
     images_to_log = [

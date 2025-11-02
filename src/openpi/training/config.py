@@ -752,11 +752,104 @@ _CONFIGS = [
         pytorch_weight_path="/path/to/your/pytorch_weight_path",
         num_train_steps=30_000,
     ),
-    #
-    # Fine-tuning Aloha configs.
-    #
-    # This is a test config that is used to illustate how train on a custom LeRobot dataset.
-    # For instuctions on how to convert and train on your own Aloha dataset see examples/aloha_real/README.md
+    TrainConfig(
+        name="pi05_agiworld",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            action_dim=32,                  # ← 必须与数据一致
+            discrete_state_input=False,
+            dtype="bfloat16",
+        ),
+        data=SimpleDataConfig(
+            repo_id="local/agibotworld_lerobot_test",
+            assets=AssetsConfig(asset_id="agibotworld_lerobot_test"),
+            data_transforms=lambda model: _transforms.Group(
+                inputs=[libero_policy.LiberoInputs(model_type=model.model_type)],
+                outputs=[libero_policy.LiberoOutputs()],
+            ),
+            base_config=DataConfig(
+                prompt_from_task=False,
+                repack_transforms=_transforms.Group(
+                    inputs=[_transforms.RepackTransform({
+                        "observation/image": "head",                 # 你的 head 视角
+                        "observation/left_wrist_image": "left_gripper",
+                        "observation/right_wrist_image": "right_gripper",
+                        "observation/state": "states",
+                        "actions": "actions",
+                        "prompt": "prompt",
+                    })]
+                ),
+            ),
+        ),
+        batch_size=16,
+        num_workers=2,
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/home/v-zhifeng/HPE/openpi/checkpoints/pi05_base/params"  # ← 改成本地
+        ),
+    ),
+
+    TrainConfig(
+        name="pi05_agiworld_lora",
+        # 关键：开启 LoRA 变体；同时把动作维度固定为 32（对齐 pi0.5 base）
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=8,          # 可先设 8（更省显存），能跑后再拉回 10
+            max_token_len=160,         # 160 也更稳（200→160）
+            discrete_state_input=False,
+            # ↓↓↓ 这两行是 LoRA 的开关（参考官方 pi0_libero_low_mem_finetune）
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ),
+        data=SimpleDataConfig(
+            repo_id="local/agibotworld_lerobot_test",
+            assets=AssetsConfig(asset_id="agibotworld_lerobot_test"),
+            data_transforms=lambda model: _transforms.Group(
+                inputs=[libero_policy.LiberoInputs(model_type=model.model_type)],
+                outputs=[libero_policy.LiberoOutputs()],
+            ),
+            base_config=DataConfig(
+                prompt_from_task=False,
+                repack_transforms=_transforms.Group(
+                    inputs=[
+                        _transforms.RepackTransform({
+                            "observation/image": "head",      # 建议先只用 head 单视角更省显存
+                            # "observation/wrist_image": "left_gripper",  # 需要再开
+                            "observation/state": "states",
+                            "actions": "actions",
+                            "prompt": "prompt",
+                        })
+                    ]
+                ),
+            ),
+        ),
+        # 加载本地 pi0.5 base 权重（LoRA 也是基于它做增量）
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/home/v-zhifeng/HPE/openpi/checkpoints/pi05_base/params"  # 本地 base 权重
+        ),
+        ema_decay=None,  # LoRA 下不建议用 EMA
+        # 冻结非 LoRA 参数，只训练 LoRA 小头
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=8,
+            max_token_len=160,
+            discrete_state_input=False,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+
+        # ---------------------------
+        # 训练参数（显存友好）
+        # ---------------------------
+        batch_size=4,         # LoRA 可尝试更大 batch（4~8 均可）
+        num_workers=2,
+        num_train_steps=30_000,
+        # optimizer / scheduler 若在全局配置中定义，可复用默认设置
+    ),
+
+    
     TrainConfig(
         name="pi0_aloha_pen_uncap",
         model=pi0_config.Pi0Config(),

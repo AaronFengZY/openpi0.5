@@ -40,47 +40,66 @@ class LiberoInputs(transforms.DataTransformFn):
     model_type: _model.ModelType
 
     def __call__(self, data: dict) -> dict:
-        # Possibly need to parse images to uint8 (H,W,C) since LeRobot automatically
-        # stores as float32 (C,H,W), gets skipped for policy inference.
-        # Keep this for your own dataset, but if your dataset stores the images
-        # in a different key than "observation/image" or "observation/wrist_image",
-        # you should change it below.
-        # Pi0 models support three image inputs at the moment: one third-person view,
-        # and two wrist views (left and right). If your dataset does not have a particular type
-        # of image, e.g. wrist images, you can comment it out here and replace it with zeros like we do for the
-        # right wrist image below.
+        # 1) 必要：head（第三人称）视角
+        if "observation/image" not in data:
+            raise KeyError("Missing key: 'observation/image' (head camera).")
         base_image = _parse_image(data["observation/image"])
-        wrist_image = _parse_image(data["observation/wrist_image"])
 
-        # Create inputs dict. Do not change the keys in the dict below.
+        # 2) 可选：left_wrist（左腕）与 right_wrist（右腕）
+        #    - 若存在，对应 mask=True
+        #    - 若不存在，用 zeros_like(base) 占位，但 mask=False（不参与模型计算）
+        if "observation/left_wrist_image" in data:
+            # ✅ 优先支持 "left_wrist_image"（你当前数据集的命名）
+            left_wrist = _parse_image(data["observation/left_wrist_image"])
+            left_mask = np.True_
+        elif "observation/wrist_image" in data:
+            # 兼容旧版 Libero 命名
+            left_wrist = _parse_image(data["observation/wrist_image"])
+            left_mask = np.True_
+        else:
+            # 若都不存在，则填充全零并设为 mask=False
+            left_wrist = np.zeros_like(base_image)
+            left_mask = np.False_
+
+        # 右腕的键名给两种常见写法都兼容一下：
+        right_key = (
+            "observation/right_wrist_image"
+            if "observation/right_wrist_image" in data
+            else ("observation/wrist_image_right" if "observation/wrist_image_right" in data else None)
+        )
+        if right_key is not None:
+            right_wrist = _parse_image(data[right_key])
+            right_mask = np.True_
+        else:
+            right_wrist = np.zeros_like(base_image)
+            # NOTE: 原仓库里只在 PI0-FAST 时对 padding 置 True；这里统一按“缺失即不参与”处理
+            right_mask = np.False_
+
+        # 3) 组装模型期望的输入结构（键名保持不变）
         inputs = {
             "state": data["observation/state"],
             "image": {
                 "base_0_rgb": base_image,
-                "left_wrist_0_rgb": wrist_image,
-                # Pad any non-existent images with zero-arrays of the appropriate shape.
-                "right_wrist_0_rgb": np.zeros_like(base_image),
+                "left_wrist_0_rgb": left_wrist,
+                "right_wrist_0_rgb": right_wrist,
             },
             "image_mask": {
                 "base_0_rgb": np.True_,
-                "left_wrist_0_rgb": np.True_,
-                # We only mask padding images for pi0 model, not pi0-FAST. Do not change this for your own dataset.
-                "right_wrist_0_rgb": np.True_ if self.model_type == _model.ModelType.PI0_FAST else np.False_,
+                "left_wrist_0_rgb": left_mask,
+                "right_wrist_0_rgb": right_mask,
             },
         }
 
-        # Pad actions to the model action dimension. Keep this for your own dataset.
-        # Actions are only available during training.
+        # 4) 训练监督：动作序列（若存在）
         if "actions" in data:
             inputs["actions"] = data["actions"]
 
-        # Pass the prompt (aka language instruction) to the model.
-        # Keep this for your own dataset (but modify the key if the instruction is not
-        # stored in "prompt"; the output dict always needs to have the key "prompt").
+        # 5) 任务文本（若存在）
         if "prompt" in data:
             inputs["prompt"] = data["prompt"]
 
         return inputs
+
 
 
 @dataclasses.dataclass(frozen=True)
