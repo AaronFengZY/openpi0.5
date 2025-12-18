@@ -4,6 +4,7 @@ checkpoints/
 data/
 wandb/
 legacy/
+40G8-A100.yaml
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
