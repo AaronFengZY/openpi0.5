@@ -432,4 +432,4 @@ class AgiBotDataset(Dataset):
             "timestamp": torch.tensor(current_abs_frame / 30.0),
             "next.done": torch.tensor(current_abs_frame == end_frame - 1),
             "action_is_pad": action_is_pad
-        }-
+        }
