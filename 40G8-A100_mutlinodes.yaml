@@ -2,7 +2,7 @@ description: I'm writing to request the 8xA100 to process the data.
 
 target:
   service: singularity
-  name: msrresrchvc
+  name: palisades33
   workspace_name: azmlws2igshare
 
 environment:
@@ -25,8 +25,8 @@ code:
     - old_scripts/
     
 jobs:
-- name: pi05_ft_static_bs256_80G4A100_test_normstat
-  sku: 80G4-A100
+- name: pi05_ft_static_bs512_40G8-A100_4nodes_IB
+  sku: 4x40G8-A100-IB-NvLink
   priority: high
   preemptible: False
   identity: managed
@@ -44,13 +44,27 @@ jobs:
   - sudo apt-get update && sudo apt-get install -y vim
   - bash setup_env.sh
   - source ~/.local/bin/env
+  - bash batch_azcopy.sh
   - mkdir -p /scratch/amlt_code/data
   - mkdir -p /scratch/amlt_code/checkpoints
-  - ln -s /scratch/v-zhifeng/agibot_beta_split_500/* /scratch/amlt_code/data/
+  - ln -s /scratch/amlt_code/agibot_beta_split_500_resize_224/* /scratch/amlt_code/data/
   - ln -s /scratch/v-zhifeng/openpi/checkpoints/* /scratch/amlt_code/checkpoints/
   - >
     cd /scratch/amlt_code &&
     export WANDB_API_KEY=994cd7b5e79dffcab948d9a69766810153a12b48 &&
     export WANDB_ENTITY=aaronfeng24 &&
-    bash ./scripts/train_jax_multinodes.sh 256
+    EXP_NAME_ENV="pi05_ft_agibot_static_1212_HSDP_formal" bash ./scripts/train_jax.sh 512
   - sleep infinity
+
+
+    # cd /scratch/amlt_code &&
+    # export WANDB_API_KEY=994cd7b5e79dffcab948d9a69766810153a12b48 &&
+    # export WANDB_ENTITY=aaronfeng24 &&
+    # EXP_NAME_ENV="pi05_ft_agibot_static_1210_test" bash ./scripts/train_jax_multinodes.sh 512 "pi05_ft_agibot_static_1210_test_bs512_lr5e-5_step1000000"
+
+
+
+  # - mkdir -p /scratch/amlt_code/data
+  # - mkdir -p /scratch/amlt_code/checkpoints
+  # - ln -s /scratch/v-zhifeng/agibot_beta_split_500_resize_224/* /scratch/amlt_code/data/
+  # - ln -s /scratch/v-zhifeng/openpi/checkpoints/* /scratch/amlt_code/checkpoints/

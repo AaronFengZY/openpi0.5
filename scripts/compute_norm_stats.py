@@ -15,6 +15,8 @@ import openpi.training.config as _config
 import openpi.training.data_loader as _data_loader
 import openpi.transforms as transforms
 
+import dataclasses  # ← 新增
+
 
 class RemoveStrings(transforms.DataTransformFn):
     def __call__(self, x: dict) -> dict:
@@ -86,8 +88,27 @@ def create_rlds_dataloader(
     return data_loader, num_batches
 
 
-def main(config_name: str, max_frames: int | None = None):
+def main(
+    config_name: str,
+    max_frames: int | None = None,
+    data_repo_id: str | None = None,
+    assets_id: str | None = None,
+):
     config = _config.get_config(config_name)
+
+    # ====== 允许 CLI 覆盖（注意：用 dataclasses.replace，不要直接赋值）======
+    if (data_repo_id is not None) or (assets_id is not None):
+        new_data = config.data
+        if data_repo_id is not None:
+            new_data = dataclasses.replace(new_data, repo_id=data_repo_id)
+        if assets_id is not None:
+            # new_data.assets 也是 frozen，要先 replace 出一个新的 assets
+            new_assets = dataclasses.replace(new_data.assets, asset_id=assets_id)
+            new_data = dataclasses.replace(new_data, assets=new_assets)
+        config = dataclasses.replace(config, data=new_data)
+    # =====================================================================
+
+
     data_config = config.data.create(config.assets_dirs, config.model)
 
     if data_config.rlds_data_dir is not None:
@@ -108,6 +129,7 @@ def main(config_name: str, max_frames: int | None = None):
 
     norm_stats = {key: stats.get_statistics() for key, stats in stats.items()}
 
+    output_name = assets_id if assets_id is not None else data_config.repo_id
     output_path = config.assets_dirs / data_config.repo_id
     print(f"Writing stats to: {output_path}")
     normalize.save(output_path, norm_stats)

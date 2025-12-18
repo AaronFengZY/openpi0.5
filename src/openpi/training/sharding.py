@@ -4,10 +4,10 @@ import logging
 import jax
 import numpy as np
 
-BATCH_AXIS = "batch"
+DP_AXIS   = "dp"
 FSDP_AXIS = "fsdp"
 # In FSDP, we shard the data across both the batch and FSDP axes.
-DATA_AXIS = (BATCH_AXIS, FSDP_AXIS)
+DATA_AXIS = (DP_AXIS, FSDP_AXIS)
 
 
 class _MeshState:
@@ -20,7 +20,7 @@ def make_mesh(num_fsdp_devices: int) -> jax.sharding.Mesh:
             f"Number of devices {jax.device_count()} must be divisible by the number of FSDP devices {num_fsdp_devices}."
         )
     mesh_shape = (jax.device_count() // num_fsdp_devices, num_fsdp_devices)
-    return jax.make_mesh(mesh_shape, (BATCH_AXIS, FSDP_AXIS))
+    return jax.make_mesh(mesh_shape, (DP_AXIS, FSDP_AXIS))
 
 
 @contextlib.contextmanager

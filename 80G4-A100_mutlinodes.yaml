@@ -25,8 +25,8 @@ code:
     - old_scripts/
     
 jobs:
-- name: pi05_ft_static_bs256_80G4A100_test_normstat
-  sku: 80G4-A100
+- name: pi05_ft_static_bs512_80G4A100_2nodes
+  sku: 2x80G4-A100
   priority: high
   preemptible: False
   identity: managed
@@ -46,11 +46,11 @@ jobs:
   - source ~/.local/bin/env
   - mkdir -p /scratch/amlt_code/data
   - mkdir -p /scratch/amlt_code/checkpoints
-  - ln -s /scratch/v-zhifeng/agibot_beta_split_500/* /scratch/amlt_code/data/
+  - ln -s /scratch/v-zhifeng/agibot_beta_split_500_resize_224/* /scratch/amlt_code/data/
   - ln -s /scratch/v-zhifeng/openpi/checkpoints/* /scratch/amlt_code/checkpoints/
   - >
     cd /scratch/amlt_code &&
     export WANDB_API_KEY=994cd7b5e79dffcab948d9a69766810153a12b48 &&
     export WANDB_ENTITY=aaronfeng24 &&
-    bash ./scripts/train_jax_multinodes.sh 256
+    bash ./scripts/train_jax_multinodes.sh 512
   - sleep infinity

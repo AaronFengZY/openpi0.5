@@ -1,0 +1,180 @@
+#!/bin/bash
+
+# ==============================================================================
+# Script Name: Train Pi05 Agibot (JAX/FSDP)
+# Description: Sets up environment variables and launches JAX distributed training.
+# Usage:       ./train.sh [BATCH_SIZE]
+# Example:     ./train.sh 64
+# ==============================================================================
+
+# Stop on error
+set -e
+
+# ==============================================================================
+# [1] Configuration: Hardware & Hyperparameters
+# ==============================================================================
+
+# --- GPU Setup ---
+# 1. Detect Local GPUs (per node)
+DETECTED_LOCAL_GPU_COUNT=$(nvidia-smi -L | wc -l)
+
+# 2. Detect Node Count
+# AMLT/MPI sets WORLD_SIZE. If not present, default to 1 (Single Node).
+NODE_COUNT=${WORLD_SIZE:-1}
+
+# 3. Calculate Global GPU Count
+# Single Node: 8 * 1 = 8
+# Multi Node:  8 * 2 = 16
+AUTO_TOTAL_GPU_COUNT=$((DETECTED_LOCAL_GPU_COUNT * NODE_COUNT))
+
+# Allow override via env for debugging, otherwise use auto-calculated value
+TOTAL_GPU_COUNT=${GPU_COUNT_OVERRIDE:-$AUTO_TOTAL_GPU_COUNT}
+LOCAL_GPU_COUNT=$DETECTED_LOCAL_GPU_COUNT  # 8
+
+echo "🖥️ Detected Local GPU Count : $DETECTED_LOCAL_GPU_COUNT"
+
+export JAX_PLATFORMS=cuda
+
+# --- Training Parameters ---
+# Accept BATCH_SIZE as the first argument, default to 64 if not provided
+BATCH_SIZE=${1:-64}
+
+RESUME_EXP_NAME=${2:-""}
+NUM_WORKERS=64
+
+WARMUP_STEPS=1000
+PEAK_LR=5e-5
+DECAY_LR=1e-5
+DECAY_STEPS=1000000  # 通常设为跟 NUM_TRAIN_STEPS 一样，或者更长
+
+NUM_TRAIN_STEPS=1000000
+SAVE_INTERVAL=10000
+KEEP_PERIOD=5
+
+# Validation: Batch size must be divisible by GLOBAL device count
+if (( BATCH_SIZE % TOTAL_GPU_COUNT != 0 )); then
+    echo "❌ Error: Batch Size ($BATCH_SIZE) must be divisible by Total Global GPU Count ($TOTAL_GPU_COUNT)."
+    echo "   (Nodes: $NODE_COUNT, Local GPUs: $DETECTED_LOCAL_GPU_COUNT)"
+    exit 1
+fi
+
+# ==============================================================================
+# [2] Configuration: Paths & Environment
+# ==============================================================================
+
+# Locate script and project root
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
+# Set Python Path to include project root
+export PYTHONPATH=$PYTHONPATH:"$PROJECT_ROOT"
+
+# --- Dataset Paths ---
+# Define where the raw data and statistics file are located
+export AGIBOT_DATA_ROOT="$PROJECT_ROOT/data"
+export NORM_STATS_FILE="$PROJECT_ROOT/assets/pi05_agiworld/agibot_full/dataset_stats_mp_q01q99_static.json"
+export AGIBOT_INDEX_FILE="episodic_dataset_fixed_static.npy"
+
+echo "⏰ FORCED JAX Timeout: $JAX_COORDINATION_SERVICE_TIMEOUT_SEC seconds"
+
+# ==============================================================================
+# [3] Configuration: Logging & Experiments
+# ==============================================================================
+
+CONFIG_NAME="pi05_agiworld"
+TIMESTAMP=$(date +%m%d_%H%M)
+
+
+# ---------------------------------------------------------------------
+# [关键修改] Resume 逻辑判断
+# ---------------------------------------------------------------------
+if [ -n "$RESUME_EXP_NAME" ]; then
+    # === Resume 模式 ===
+    EXP_NAME="$RESUME_EXP_NAME"
+    RESUME_FLAG="--resume"
+    # 【修改点 2】Resume 时绝对不要 overwrite，否则会删除旧权重！
+    OVERWRITE_FLAG="" 
+    
+    echo "🔄 RESUME MODE ACTIVATED"
+    echo "   Target Exp: $EXP_NAME"
+else
+    # === New Training 模式 ===
+    if [[ -z "$EXP_NAME_ENV" ]] || [[ "$EXP_NAME_ENV" == "default" ]]; then
+        BASE_NAME="pi05_fsdp_run_${TIMESTAMP}"
+    else
+        BASE_NAME="$EXP_NAME_ENV"
+    fi
+    
+    SUFFIX="_bs${BATCH_SIZE}_lr${PEAK_LR}_step${NUM_TRAIN_STEPS}"
+    EXP_NAME="${BASE_NAME}${SUFFIX}"
+    RESUME_FLAG=""
+    # 新训练允许覆盖（如果重名）
+    OVERWRITE_FLAG="--overwrite"
+fi
+
+# --- WandB Naming Strategy ---
+# Format: Pi05_Agibot_BS{BatchSize}_{Date_Time}
+CUSTOM_WANDB_NAME="Pi05_Agibot_BS${BATCH_SIZE}_${TIMESTAMP}"
+
+# Export to ENV so Python script (train_jax.py) can read it
+export WANDB_RUN_NAME="$CUSTOM_WANDB_NAME"
+
+# ==============================================================================
+# [4] Execution Summary
+# ==============================================================================
+
+echo "================================================================"
+echo "🚀 Launching Training Job"
+echo "================================================================"
+echo "📂 Project Root : $PROJECT_ROOT"
+echo "📂 Data Root    : $AGIBOT_DATA_ROOT"
+echo "📊 Stats File   : $NORM_STATS_FILE"
+echo "📑 Index File   : $AGIBOT_INDEX_FILE"  # <--- 打印出来确认一下
+echo "----------------------------------------------------------------"
+echo "🔧 Config Name  : $CONFIG_NAME"
+echo "🏷️  Exp Name     : $EXP_NAME"
+echo "🔄 Resume Mode  : ${RESUME_FLAG:-No}"
+echo "⚠️  Overwrite    : ${OVERWRITE_FLAG:-No}"
+echo "----------------------------------------------------------------"
+echo "🖥️  GPUs Used    : $GPU_COUNT (IDs: $CUDA_VISIBLE_DEVICES)"
+echo "📦 Batch Size   : $BATCH_SIZE"
+echo "🧵 Num Workers  : $NUM_WORKERS"
+echo "🏃 Total Steps  : $NUM_TRAIN_STEPS"
+echo "📈 LR Schedule  : Warmup=$WARMUP_STEPS | Peak=$PEAK_LR | End=$DECAY_LR"
+echo "💾 Save Interval: Every $SAVE_INTERVAL steps"
+echo "♻️  Keep Last    : $KEEP_PERIOD checkpoints"
+echo "----------------------------------------------------------------"
+echo "📈 WandB Name   : $WANDB_RUN_NAME"
+echo "================================================================"
+
+# ==============================================================================
+echo "🔧 Patching OpenPI DataLoader to allow multi-node..."
+
+TARGET_FILE="$PROJECT_ROOT/src/openpi/training/data_loader.py"
+
+# 检查文件是否存在，防止路径错误
+if [ -f "$TARGET_FILE" ]; then
+    sed -i 's/raise NotImplementedError("Data loading with multiple processes is not supported.")/pass # Hotfix for multi-node/g' "$TARGET_FILE"
+    echo "✅ Successfully patched data_loader.py"
+else
+    echo "⚠️ Warning: Could not find data_loader.py at $TARGET_FILE. Check path if error persists."
+fi
+
+
+# Added --num_train_steps argument
+uv run "$SCRIPT_DIR/train_jax.py" "$CONFIG_NAME" \
+    --exp_name "$EXP_NAME" \
+    --fsdp_devices "$LOCAL_GPU_COUNT" \
+    --batch_size "$BATCH_SIZE" \
+    --num_workers "$NUM_WORKERS" \
+    --num_train_steps "$NUM_TRAIN_STEPS" \
+    --save_interval "$SAVE_INTERVAL" \
+    --keep_period "$KEEP_PERIOD" \
+    $OVERWRITE_FLAG \
+    --wandb_enabled \
+    --log_interval 100 \
+    --lr_schedule.warmup_steps "$WARMUP_STEPS" \
+    --lr_schedule.peak_lr "$PEAK_LR" \
+    --lr_schedule.decay_lr "$DECAY_LR" \
+    --lr_schedule.decay_steps "$DECAY_STEPS" \
+    $RESUME_FLAG

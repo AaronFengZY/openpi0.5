@@ -3,6 +3,13 @@ import enum
 import logging
 import socket
 
+# ============================
+# ✅ 新增：添加 msgpack_numpy 支持
+# ============================
+import msgpack_numpy
+msgpack_numpy.patch()
+# ============================
+
 import tyro
 
 from openpi.policies import policy as _policy

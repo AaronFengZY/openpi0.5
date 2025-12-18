@@ -16,6 +16,8 @@ import openpi.training.config as _config
 from openpi.training.droid_rlds_dataset import DroidRldsDataset
 import openpi.transforms as _transforms
 
+from openpi.training.agibot_dataset import AgiBotDataset
+
 T_co = TypeVar("T_co", covariant=True)
 
 
@@ -136,6 +138,16 @@ def create_torch_dataset(
         raise ValueError("Repo ID is not set. Cannot create dataset.")
     if repo_id == "fake":
         return FakeDataset(model_config, num_samples=1024)
+    # === 新增你的逻辑 ===
+    if "agibot" in repo_id:
+        # 优先从环境变量读，读不到就用默认路径
+        root = os.getenv("AGIBOT_DATA_ROOT", "/data/default/path/to/agibot")
+        logging.info(f"Loading AgiBot dataset from: {root}")
+        return AgiBotDataset(
+            root_dir=root,
+            action_horizon=action_horizon,
+        )
+    # ====================   
 
     dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
     dataset = lerobot_dataset.LeRobotDataset(
@@ -410,7 +422,7 @@ class TorchDataLoader:
             seed: The seed to use for shuffling the data.
         """
         if jax.process_count() > 1:
-            raise NotImplementedError("Data loading with multiple processes is not supported.")
+            pass # Hotfix for multi-node
 
         if len(dataset) < local_batch_size:
             raise ValueError(f"Local batch size ({local_batch_size}) is larger than the dataset size ({len(dataset)}).")
@@ -500,7 +512,7 @@ class RLDSDataLoader:
         self._num_batches = num_batches
 
         if jax.process_count() > 1:
-            raise NotImplementedError("Data loading with multiple processes is not supported.")
+            pass # Hotfix for multi-node
 
         if sharding is None:
             # Use data parallel sharding by default.

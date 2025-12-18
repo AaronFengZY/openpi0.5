@@ -12,6 +12,7 @@ import etils.epath as epath
 import flax.nnx as nnx
 from typing_extensions import override
 import tyro
+import os
 
 import openpi.models.model as _model
 import openpi.models.pi0_config as pi0_config
@@ -756,97 +757,49 @@ _CONFIGS = [
         name="pi05_agiworld",
         model=pi0_config.Pi0Config(
             pi05=True,
-            action_horizon=10,
-            action_dim=32,                  # ← 必须与数据一致
+            action_horizon=30,           # ← 从 10 改成 30，对应 1s 预测窗口（30fps）
+            action_dim=32,               # ← 和 HF 里的 states/actions 最后一维一致（32）
             discrete_state_input=False,
             dtype="bfloat16",
         ),
         data=SimpleDataConfig(
-            repo_id="local/agibotworld_lerobot_test",
-            assets=AssetsConfig(asset_id="agibotworld_lerobot_test"),
-            data_transforms=lambda model: _transforms.Group(
-                inputs=[libero_policy.LiberoInputs(model_type=model.model_type)],
-                outputs=[libero_policy.LiberoOutputs()],
-            ),
+            repo_id="agibot",            # 开关，必须包含agibot数据集
+            
+            # 1. 这里建议直接写对，防止以后还得靠环境变量 patch
+            assets=AssetsConfig(asset_id="agibot_full"), 
+            
+            # 2. 【关键修改】Data Transforms 置空
+            #    因为你的 Dataset 已经处理好了所有数据清洗工作
+            data_transforms=lambda model: _transforms.Group(inputs=[], outputs=[]),
             base_config=DataConfig(
                 prompt_from_task=False,
                 repack_transforms=_transforms.Group(
                     inputs=[_transforms.RepackTransform({
-                        "observation/image": "head",                 # 你的 head 视角
+                        "observation/image": "head",                 # head 视角 → base_0_rgb
                         "observation/left_wrist_image": "left_gripper",
                         "observation/right_wrist_image": "right_gripper",
-                        "observation/state": "states",
-                        "actions": "actions",
+                        "observation/state": "states",               # (32,)
+                        "actions": "actions",                        # (32,)
                         "prompt": "prompt",
                     })]
                 ),
             ),
         ),
-        batch_size=16,
+        batch_size=4,
         num_workers=2,
         weight_loader=weight_loaders.CheckpointWeightLoader(
-            "/home/v-zhifeng/HPE/openpi/checkpoints/pi05_base/params"  # ← 改成本地
+            os.path.join(
+                os.path.dirname(__file__),
+                "../../../checkpoints/pi05_base/params",
+            )
         ),
-    ),
-
-    TrainConfig(
-        name="pi05_agiworld_lora",
-        # 关键：开启 LoRA 变体；同时把动作维度固定为 32（对齐 pi0.5 base）
-        model=pi0_config.Pi0Config(
-            pi05=True,
-            action_dim=32,
-            action_horizon=8,          # 可先设 8（更省显存），能跑后再拉回 10
-            max_token_len=160,         # 160 也更稳（200→160）
-            discrete_state_input=False,
-            # ↓↓↓ 这两行是 LoRA 的开关（参考官方 pi0_libero_low_mem_finetune）
-            paligemma_variant="gemma_2b_lora",
-            action_expert_variant="gemma_300m_lora",
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,    # 预热步数
+            peak_lr=5e-5,          # 峰值学习率 (Pi0 推荐值)
+            decay_steps=1_000_000,
+            decay_lr=1e-5,         # 结束时的学习率
         ),
-        data=SimpleDataConfig(
-            repo_id="local/agibotworld_lerobot_test",
-            assets=AssetsConfig(asset_id="agibotworld_lerobot_test"),
-            data_transforms=lambda model: _transforms.Group(
-                inputs=[libero_policy.LiberoInputs(model_type=model.model_type)],
-                outputs=[libero_policy.LiberoOutputs()],
-            ),
-            base_config=DataConfig(
-                prompt_from_task=False,
-                repack_transforms=_transforms.Group(
-                    inputs=[
-                        _transforms.RepackTransform({
-                            "observation/image": "head",      # 建议先只用 head 单视角更省显存
-                            # "observation/wrist_image": "left_gripper",  # 需要再开
-                            "observation/state": "states",
-                            "actions": "actions",
-                            "prompt": "prompt",
-                        })
-                    ]
-                ),
-            ),
-        ),
-        # 加载本地 pi0.5 base 权重（LoRA 也是基于它做增量）
-        weight_loader=weight_loaders.CheckpointWeightLoader(
-            "/home/v-zhifeng/HPE/openpi/checkpoints/pi05_base/params"  # 本地 base 权重
-        ),
-        ema_decay=None,  # LoRA 下不建议用 EMA
-        # 冻结非 LoRA 参数，只训练 LoRA 小头
-        freeze_filter=pi0_config.Pi0Config(
-            pi05=True,
-            action_dim=32,
-            action_horizon=8,
-            max_token_len=160,
-            discrete_state_input=False,
-            paligemma_variant="gemma_2b_lora",
-            action_expert_variant="gemma_300m_lora",
-        ).get_freeze_filter(),
-
-        # ---------------------------
-        # 训练参数（显存友好）
-        # ---------------------------
-        batch_size=4,         # LoRA 可尝试更大 batch（4~8 均可）
-        num_workers=2,
-        num_train_steps=30_000,
-        # optimizer / scheduler 若在全局配置中定义，可复用默认设置
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
     ),
 
     
