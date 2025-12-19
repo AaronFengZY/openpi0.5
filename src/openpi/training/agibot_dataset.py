@@ -52,20 +52,37 @@ class AgiBotDataset(Dataset):
         
         self.episode_lengths = self.start_end[:, 1] - self.start_end[:, 0]
         self.cumulative_lengths = np.cumsum(self.episode_lengths)
-
-        print("cumulative_lengths.shape:", self.cumulative_lengths.shape)
-        print("cumulative_lengths.ndim :", self.cumulative_lengths.ndim)
-        print("num_episodes:", len(self.cumulative_lengths))
-
         self.total_frames = self.cumulative_lengths[-1]
 
-        print("total_frames in dataset:", self.total_frames)
+        # =========================================================
+        # [优化] O(log N) -> O(1) 线性映射
+        # 2.1亿个 uint32 占用约 804MB 内存
+        # =========================================================
+        logging.info(f"🚀 Building O(1) frame mapping for {self.total_frames} frames...")
+        
+        # 使用 uint32 足够存储 76万个 ep_idx (最大支持 42亿)
+        self.frame_to_ep = np.zeros(self.total_frames, dtype=np.uint32)
+        
+        # 填充映射表
+        start_idx = 0
+        for ep_idx, length in enumerate(self.episode_lengths):
+            end_idx = start_idx + length
+            self.frame_to_ep[start_idx : end_idx] = ep_idx
+            start_idx = end_idx
+            
+        logging.info("✅ O(1) mapping built successfully.")
+        # =========================================================
+
+        # print("total_frames in dataset:", self.total_frames)
         
         # 2. 加载元数据 (获取 dim_list 和 total_length)
         meta_json_path = os.path.join(root_dir, meta_filename)
         logging.info(f"[AgiBotDataset] Loading metadata from: {meta_json_path}")
         with open(meta_json_path, "r") as f:
             self.dims_meta = json.load(f)
+
+        # print("dims_meta keys:", list(self.dims_meta.keys())[:10])
+        # print("len dims_meta:", len(self.dims_meta))
 
         # 3. 加载统计数据 [关键修改]
         if self.normalization:
@@ -140,17 +157,28 @@ class AgiBotDataset(Dataset):
     def __len__(self):
         return self.total_frames
 
+    # def _get_info_by_idx(self, global_idx): 
+    #     ep_idx = np.searchsorted(self.cumulative_lengths, global_idx, side='right')
+
+    #     if ep_idx == 0:
+    #         frame_idx_in_ep = global_idx
+    #     else:
+    #         frame_idx_in_ep = global_idx - self.cumulative_lengths[ep_idx - 1]
+    #     return ep_idx, frame_idx_in_ep
+    # O(log N) -> O(1) 优化版本
+
     def _get_info_by_idx(self, global_idx):
-        ep_idx = np.searchsorted(self.cumulative_lengths, global_idx, side='right')
+        # O(1) 直接查表获取所在的 Episode 索引
+        ep_idx = self.frame_to_ep[global_idx]
 
-        print("cumulative_lengths:", self.cumulative_lengths)
-
-
+        # 计算相对帧索引
         if ep_idx == 0:
             frame_idx_in_ep = global_idx
         else:
+            # 仍然需要 cumulative_lengths 来快速获取前一个 episode 的结束位置
             frame_idx_in_ep = global_idx - self.cumulative_lengths[ep_idx - 1]
-        return ep_idx, frame_idx_in_ep
+            
+        return int(ep_idx), int(frame_idx_in_ep)
 
     def _load_video_frame(self, video_folder, view_prefix, abs_frame_idx):
             chunk_idx = abs_frame_idx // self.CHUNK_SIZE
@@ -187,30 +215,25 @@ class AgiBotDataset(Dataset):
 
         # 1. 基础信息
         ep_idx, idx_in_seg = self._get_info_by_idx(idx)
-
-        # print("idx:", idx, "ep_idx:", ep_idx, "idx_in_seg:", idx_in_seg)
         
-        rel_path = self.video_paths[ep_idx] # "327/648642.mp4"
-        rel_path_no_ext = os.path.splitext(rel_path)[0] # "327/648642"
+        rel_path = self.video_paths[ep_idx] # "327/648642"
         
         start_frame, end_frame = self.start_end[ep_idx]
         current_abs_frame = start_frame + idx_in_seg
 
-
-        # print("start_frame:", start_frame, "end_frame:", end_frame, "current_abs_frame:", current_abs_frame)
-        
         # 2. 获取该 Episode 的 Metadata
-        if rel_path_no_ext in self.dims_meta:
-            meta_info = self.dims_meta[rel_path_no_ext]
+        if rel_path in self.dims_meta:
+            meta_info = self.dims_meta[rel_path]
             dim_list = meta_info["dim_list"]
             total_file_length = meta_info["length"] # 这一集的总帧数 (action.npy 的行数)
         else:
-            raise ValueError(f"Meta info not found for {rel_path_no_ext}")
+            raise ValueError(f"Meta info not found for {rel_path}")
 
         # ==========================================
         # 3. 读取视频
         # ==========================================
-        video_folder = os.path.join(self.root_dir, "videos_h264", rel_path_no_ext, "videos")
+        video_folder = os.path.join(self.root_dir, "videos_h264", rel_path, "videos")
+
         img_head = self._load_video_frame(video_folder, "head_color", current_abs_frame)
         img_left = self._load_video_frame(video_folder, "hand_left_color", current_abs_frame)
         img_right = self._load_video_frame(video_folder, "hand_right_color", current_abs_frame)
@@ -218,7 +241,7 @@ class AgiBotDataset(Dataset):
         # ==========================================
         # 4. 读取 Action & State (使用 Helper 类)
         # ==========================================
-        action_path = os.path.join(self.root_dir, "actions_gaussian", rel_path_no_ext, "action.npy")
+        action_path = os.path.join(self.root_dir, "actions_gaussian", rel_path, "action.npy")
 
         # print("Action Path:", action_path)
         
@@ -299,7 +322,7 @@ class AgiBotDataset(Dataset):
         state_waist = torch.from_numpy(action_obj.state_waist_position[0]) # (2,)
 
         # ==========================================================
-        # 7. Normalization using q01 / q99 (MODIFIED)
+        # 8. Normalization using q01 / q99 (MODIFIED)
         # Formula: 2 * (x - q01) / (q99 - q01) - 1
         # ==========================================================
 
@@ -340,7 +363,34 @@ class AgiBotDataset(Dataset):
             act_joint = 2 * (act_joint - action_q01) / action_denom - 1
             act_joint = torch.clamp(act_joint, -10.0, 10.0)
             actions_final[:, :VALID_DIMS_JOINT] = act_joint
-            # actions_final[:, 14:16] 是 gripper，保持原值
+
+
+        return {
+            "head": img_head,
+            "left_gripper": img_left,
+            "right_gripper": img_right,
+            "head_mask": torch.tensor(True),
+            "left_gripper_mask": torch.tensor(True),
+            "right_gripper_mask": torch.tensor(True),
+            "states": state_final,
+            "actions": actions_final,
+
+            # Auxiliary Data (Current Frame Only)
+            "state_head": state_head,     # (2,)
+            "state_waist": state_waist,   # (2,)
+
+            "prompt": self.instructions[ep_idx],
+            # Meta
+            "episode_index": torch.tensor(ep_idx),
+            "frame_index": torch.tensor(current_abs_frame),
+            "timestamp": torch.tensor(current_abs_frame / 30.0),
+            "next.done": torch.tensor(current_abs_frame == end_frame - 1),
+            "action_is_pad": action_is_pad
+        }
+
+
+
+                    # actions_final[:, 14:16] 是 gripper，保持原值
             # actions_final[:, 16:] 是 padding，不归一化
 
 
@@ -410,26 +460,3 @@ class AgiBotDataset(Dataset):
 
         # while True:
         #     pass
-
-        return {
-            "head": img_head,
-            "left_gripper": img_left,
-            "right_gripper": img_right,
-            "head_mask": torch.tensor(True),
-            "left_gripper_mask": torch.tensor(True),
-            "right_gripper_mask": torch.tensor(True),
-            "states": state_final,
-            "actions": actions_final,
-
-            # Auxiliary Data (Current Frame Only)
-            "state_head": state_head,     # (2,)
-            "state_waist": state_waist,   # (2,)
-
-            "prompt": self.instructions[ep_idx],
-            # Meta
-            "episode_index": torch.tensor(ep_idx),
-            "frame_index": torch.tensor(current_abs_frame),
-            "timestamp": torch.tensor(current_abs_frame / 30.0),
-            "next.done": torch.tensor(current_abs_frame == end_frame - 1),
-            "action_is_pad": action_is_pad
-        }

@@ -3,7 +3,12 @@ checkpoints/
 data/
 wandb/
 legacy/
+40G8-A100_mutlinodes.yaml
 40G8-A100.yaml
+80G4-A100_mutlinodes.yaml
+80G4-A100.yaml
+192G8-B200_k8s.yaml
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
