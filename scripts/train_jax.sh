@@ -36,11 +36,11 @@ echo "🖥️ Detected Local GPU Count : $DETECTED_LOCAL_GPU_COUNT"
 export JAX_PLATFORMS=cuda
 
 # --- Training Parameters ---
-# Accept BATCH_SIZE as the first argument, default to 64 if not provided
 BATCH_SIZE=${1:-64}
+ACTION=${2:-"resume"}  # Default action is resume
 
 RESUME_EXP_NAME=${2:-""}
-NUM_WORKERS=128
+NUM_WORKERS=64
 
 WARMUP_STEPS=1000
 PEAK_LR=5e-5
@@ -49,7 +49,7 @@ DECAY_STEPS=1000000  # 通常设为跟 NUM_TRAIN_STEPS 一样，或者更长
 
 NUM_TRAIN_STEPS=1000000
 SAVE_INTERVAL=10000
-KEEP_PERIOD=5
+KEEP_PERIOD=1
 
 # Validation: Batch size must be divisible by GLOBAL device count
 if (( BATCH_SIZE % TOTAL_GPU_COUNT != 0 )); then
@@ -88,28 +88,26 @@ TIMESTAMP=$(date +%m%d_%H%M)
 # ---------------------------------------------------------------------
 # [关键修改] Resume 逻辑判断
 # ---------------------------------------------------------------------
-if [ -n "$RESUME_EXP_NAME" ]; then
-    # === Resume 模式 ===
-    EXP_NAME="$RESUME_EXP_NAME"
-    RESUME_FLAG="--resume"
-    # 【修改点 2】Resume 时绝对不要 overwrite，否则会删除旧权重！
-    OVERWRITE_FLAG="" 
-    
-    echo "🔄 RESUME MODE ACTIVATED"
-    echo "   Target Exp: $EXP_NAME"
+# --- Experiment Naming ---
+if [[ -z "$EXP_NAME_ENV" ]] || [[ "$EXP_NAME_ENV" == "default" ]]; then
+    BASE_NAME="pi05_fsdp_run_${TIMESTAMP}"
 else
-    # === New Training 模式 ===
-    if [[ -z "$EXP_NAME_ENV" ]] || [[ "$EXP_NAME_ENV" == "default" ]]; then
-        BASE_NAME="pi05_fsdp_run_${TIMESTAMP}"
-    else
-        BASE_NAME="$EXP_NAME_ENV"
-    fi
-    
-    SUFFIX="_bs${BATCH_SIZE}_lr${PEAK_LR}_step${NUM_TRAIN_STEPS}"
-    EXP_NAME="${BASE_NAME}${SUFFIX}"
-    RESUME_FLAG=""
-    # 新训练允许覆盖（如果重名）
-    OVERWRITE_FLAG="--overwrite"
+    BASE_NAME="$EXP_NAME_ENV"
+fi
+SUFFIX="_bs${BATCH_SIZE}_lr${PEAK_LR}_step${NUM_TRAIN_STEPS}"
+EXP_NAME="${BASE_NAME}${SUFFIX}"
+
+# --- Logic Mapping ---
+# We map the string intent to specific flags for the Python script
+if [[ "$ACTION" == "overwrite" ]]; then
+    echo "⚠️  ACTION: OVERWRITE - Forcing a fresh start."
+    MODE_FLAGS="--overwrite --no-resume"
+elif [[ "$ACTION" == "resume" ]]; then
+    echo "🔄 ACTION: RESUME - Defaulting to continuation if data exists."
+    MODE_FLAGS="--resume --no-overwrite"
+else
+    echo "❌ Error: Unknown action '$ACTION'. Use 'resume' or 'overwrite'."
+    exit 1
 fi
 
 # --- WandB Naming Strategy ---
@@ -117,7 +115,7 @@ fi
 CUSTOM_WANDB_NAME="Pi05_Agibot_BS${BATCH_SIZE}_${TIMESTAMP}"
 
 # Export to ENV so Python script (train_jax.py) can read it
-export WANDB_RUN_NAME="$CUSTOM_WANDB_NAME"
+export WANDB_RUN_NAME="$EXP_NAME"
 
 # ==============================================================================
 # [4] Execution Summary
@@ -133,8 +131,7 @@ echo "📑 Index File   : $AGIBOT_INDEX_FILE"  # <--- 打印出来确认一下
 echo "----------------------------------------------------------------"
 echo "🔧 Config Name  : $CONFIG_NAME"
 echo "🏷️  Exp Name     : $EXP_NAME"
-echo "🔄 Resume Mode  : ${RESUME_FLAG:-No}"
-echo "⚠️  Overwrite    : ${OVERWRITE_FLAG:-No}"
+echo "🔢 MODE_FLAGS   : $MODE_FLAGS"
 echo "----------------------------------------------------------------"
 echo "🖥️  GPUs Used    : $GPU_COUNT (IDs: $CUDA_VISIBLE_DEVICES)"
 echo "📦 Batch Size   : $BATCH_SIZE"
@@ -170,11 +167,10 @@ uv run "$SCRIPT_DIR/train_jax.py" "$CONFIG_NAME" \
     --num_train_steps "$NUM_TRAIN_STEPS" \
     --save_interval "$SAVE_INTERVAL" \
     --keep_period "$KEEP_PERIOD" \
-    $OVERWRITE_FLAG \
+    $MODE_FLAGS \
     --wandb_enabled \
     --log_interval 100 \
     --lr_schedule.warmup_steps "$WARMUP_STEPS" \
     --lr_schedule.peak_lr "$PEAK_LR" \
     --lr_schedule.decay_lr "$DECAY_LR" \
-    --lr_schedule.decay_steps "$DECAY_STEPS" \
-    $RESUME_FLAG
+    --lr_schedule.decay_steps "$DECAY_STEPS"

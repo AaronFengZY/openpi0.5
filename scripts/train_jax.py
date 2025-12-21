@@ -306,41 +306,52 @@ def main(config: _config.TrainConfig):
     replicated_sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec())
 
     # =================================================================
-    # [关键修复] 分布式安全清理：只有 Rank 0 负责 Overwrite 删除
+    # [Robust Resume/Overwrite Logic]
     # =================================================================
-    # 目的：防止多个节点同时执行 rmtree 导致 FileNotFoundError
-    if config.overwrite and jax.process_index() == 0:
-        ckpt_path = epath.Path(config.checkpoint_dir)
-        if ckpt_path.exists():
-            logging.info(f"🧹 [Rank 0] Overwrite flag is set. Cleaning up {ckpt_path}...")
-            import shutil
-            try:
-                # 使用 shutil 强力删除，不用 etils 防止 backend 兼容问题
-                if ckpt_path.is_dir():
-                    shutil.rmtree(str(ckpt_path))
-                else:
-                    ckpt_path.unlink()
-                logging.info("✅ [Rank 0] Cleanup done.")
-            except Exception as e:
-                logging.warning(f"⚠️ [Rank 0] Cleanup failed (might be deleted already): {e}")
+    ckpt_path = epath.Path(config.checkpoint_dir)
+    
+    # 1. Detect disk state
+    # A directory is "resumable" if it exists and contains any files
+    is_resumable = ckpt_path.exists() and any(ckpt_path.iterdir())
 
-    # 必须让其他节点等待 Rank 0 删完，否则它们可能会试图创建一个正在被删除的目录
-    if config.overwrite:
-        # 使用 JAX 的 barrier (或者简单的 sleep)
-        logging.info(f"⏳ [Rank {jax.process_index()}] Waiting for Rank 0 to cleanup...")
-        # 如果没有很好的 barrier 机制，简单的 sleep 也能解决大部分问题，或者依赖后面的 initialize_checkpoint_dir 自动重建
-        time.sleep(5) 
+    # 2. Determine execution state based on Bash flags + Disk state
+    # If user wants overwrite, we ignore existing data.
+    # If user wants resume but no data exists, we must start fresh (auto-fallback).
+    should_resume = config.resume and is_resumable
+    should_overwrite = config.overwrite 
 
-    # =================================================================
+    # --- 3. Handle physical cleanup (Rank 0 only) ---
+    if should_overwrite:
+        if jax.process_index() == 0:
+            if ckpt_path.exists():
+                logging.info(f"🧹 [Rank 0] Overwrite requested. Deleting: {ckpt_path}")
+                import shutil
+                try:
+                    shutil.rmtree(str(ckpt_path), ignore_errors=True)
+                    logging.info("✅ [Rank 0] Cleanup successful.")
+                except Exception as e:
+                    logging.warning(f"⚠️ [Rank 0] Cleanup error: {e}")
+        
+        # 【修改 1】使用真正的 Barrier 而不是 sleep
+        # 只有当 Rank 0 彻底跑完上面的代码，其他 Rank 才能通过这一行
+        logging.info(f"⏳ [Rank {jax.process_index()}] Synchronizing at cleanup barrier...")
+        jax.distributed.barrier() 
 
+    # --- 5. Finalize state ---
+    # 【修改 2】关键：将 overwrite 强制设为 False
+    # 因为 Rank 0 已经手动清理过了，如果这里再传 True，
+    # 每一个节点都会在内部尝试重复删除动作，导致报错。
     checkpoint_manager, resuming = _checkpoints.initialize_checkpoint_dir(
         config.checkpoint_dir,
         keep_period=config.keep_period,
-        overwrite=config.overwrite,
-        resume=config.resume,
+        overwrite=False, # <-- 改成 False，避免内部竞态
+        resume=should_resume,
     )
+    
+    logging.info(f"🏁 Mode Decision: [Resume={resuming}] [Overwrite={should_overwrite}]")
+    
     init_wandb(config, resuming=resuming, enabled=config.wandb_enabled)
-
+    
     # =================================================================
     # 🚨 [Auto-Config v3] 终极补丁：覆盖 Stats + 移除 ResizeImages
     # =================================================================
@@ -360,7 +371,7 @@ def main(config: _config.TrainConfig):
         dummy = {"mean": np.zeros(32), "std": np.ones(32), "q01": np.zeros(32), "q99": np.ones(32)}
         real_stats = {"state": dummy, "actions": dummy}
 
-# =================================================================
+    # =================================================================
     # 🚨 [Auto-Config v4] 终极补丁：Stats + NoResize + Repack修正
     # =================================================================
     
