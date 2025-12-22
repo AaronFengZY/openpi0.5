@@ -787,6 +787,7 @@ _CONFIGS = [
         ),
         batch_size=4,
         num_workers=2,
+        ema_decay=0.999,
         weight_loader=weight_loaders.CheckpointWeightLoader(
             os.path.join(
                 os.path.dirname(__file__),
