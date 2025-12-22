@@ -7,12 +7,9 @@ import logging
 
 from .action import AgibotActionState
 
-try:
-    import decord
-    from decord import VideoReader, cpu
-    decord.bridge.set_bridge('torch')
-except ImportError:
-    pass
+import decord
+from decord import VideoReader, cpu
+decord.bridge.set_bridge('torch')
 
 class AgiBotDataset(Dataset):
     def __init__(
@@ -208,6 +205,7 @@ class AgiBotDataset(Dataset):
                 # ... (错误处理) ...
                 # ❌ [删除] return torch.zeros((3, 224, 224), dtype=torch.float32)
                 # ✅ [修改] 保持一致的 (H, W, C) 格式
+                print(f"❌ [DEBUG] Error loading video {video_path}: {e}")
                 return torch.zeros((224, 224, 3), dtype=torch.float32)
 
     def __getitem__(self, idx):
@@ -378,6 +376,9 @@ class AgiBotDataset(Dataset):
             # Auxiliary Data (Current Frame Only)
             "state_head": state_head,     # (2,)
             "state_waist": state_waist,   # (2,)
+
+            # --- 在这里添加 rel_path ---
+            "rel_path": rel_path,
 
             "prompt": self.instructions[ep_idx],
             # Meta

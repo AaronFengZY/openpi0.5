@@ -1,0 +1,78 @@
+apiVersion: batch.volcano.sh/v1alpha1
+kind: Job
+metadata:
+  name: cogact-1
+  namespace:  bonete05
+spec:
+  queue: bonete05
+  minAvailable: 2
+  plugins:
+    ssh: []   # passwordless SSH + host files under /etc/volcano
+    svc: []   # creates per-task headless Services when containerPorts are present
+    env: []   # VC_* envs
+  tasks:
+    - name: server
+      replicas: 2
+      template:
+        metadata:
+          labels:
+            app: rdma-ibsendbw
+            role: server
+        spec:
+          schedulerName: volcano
+          restartPolicy: Never
+          volumes:
+            - name: dshm
+              emptyDir:
+                medium: Memory
+                sizeLimit: 100Gi
+            - name: data
+              persistentVolumeClaim:
+                claimName: pvc-vast-bonete05
+          tolerations:
+            - key: "rdma"
+              operator: "Exists"
+              effect: "NoSchedule"
+            - key: "nvidia.com/gpu"
+              operator: "Exists"
+              effect: "NoSchedule"
+          affinity:
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchLabels:
+                      app: rdma-ibsendbw
+                  topologyKey: kubernetes.io/hostname
+          containers:
+            - name: server
+              # image: nvcr.io/nvidia/cuda:12.2.0-base-ubuntu22.04
+              image: pytorch/pytorch:2.8.0-cuda12.8-cudnn9-devel
+              env:
+              volumeMounts:
+                - name: dshm
+                  mountPath: /dev/shm
+                - name: data
+                  mountPath: /data
+              ports:
+                - name: rdma
+                  containerPort: 18515
+              command: ["/bin/bash","-lc"]
+              args:
+                - |
+                  export NODE_RANK=$VC_TASK_INDEX
+                  export NODE_COUNT=2
+                  export MASTER_PORT=6174
+
+                  echo "Ready"
+                  sleep infinity
+              resources:
+                requests:
+                  nvidia.com/gpu: "8"
+                  cpu: "192"
+                  memory: "2600Gi"
+                  rdma/rdma_shared_device_a: "1"
+                limits:
+                  nvidia.com/gpu: "8"
+                  cpu: "192"
+                  memory: "2600Gi"
+                  rdma/rdma_shared_device_a: "1"
