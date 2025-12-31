@@ -39,12 +39,15 @@ export JAX_PLATFORMS=cuda
 BATCH_SIZE=${1:-64}
 ACTION=${2:-"resume"}  # Default action is resume
 
+# [修改] 直接赋值，不再从参数读取
+DOWNSAMPLE=2
+
 RESUME_EXP_NAME=${2:-""}
 NUM_WORKERS=64
 
 WARMUP_STEPS=1000
-PEAK_LR=1e-4
-DECAY_LR=5e-6
+PEAK_LR=5e-5
+DECAY_LR=1e-5
 DECAY_STEPS=1000000  # 通常设为跟 NUM_TRAIN_STEPS 一样，或者更长
 
 NUM_TRAIN_STEPS=1000000
@@ -75,7 +78,11 @@ export AGIBOT_DATA_ROOT="$PROJECT_ROOT/data"
 export NORM_STATS_FILE="$PROJECT_ROOT/assets/pi05_agiworld/agibot_full/dataset_stats_mp_q01q99_static.json"
 export AGIBOT_INDEX_FILE="episodic_dataset_fixed_static.npy"
 
+# [修改] 将硬编码的 DOWNSAMPLE 导出给 Python
+export AGIBOT_DOWNSAMPLE_RATE="$DOWNSAMPLE"
+
 echo "⏰ FORCED JAX Timeout: $JAX_COORDINATION_SERVICE_TIMEOUT_SEC seconds"
+echo "⏭️  Downsample Rate : $AGIBOT_DOWNSAMPLE_RATE (Fixed)"
 
 # ==============================================================================
 # [3] Configuration: Logging & Experiments
@@ -94,7 +101,7 @@ if [[ -z "$EXP_NAME_ENV" ]] || [[ "$EXP_NAME_ENV" == "default" ]]; then
 else
     BASE_NAME="$EXP_NAME_ENV"
 fi
-SUFFIX="_bs${BATCH_SIZE}_lr${PEAK_LR}_step${NUM_TRAIN_STEPS}"
+SUFFIX="_bs${BATCH_SIZE}_downsample${DOWNSAMPLE}_pk${PEAK_LR}_decay${DECAY_LR}_iter${NUM_TRAIN_STEPS}"
 EXP_NAME="${BASE_NAME}${SUFFIX}"
 
 # --- Logic Mapping ---
@@ -131,6 +138,7 @@ echo "📑 Index File   : $AGIBOT_INDEX_FILE"  # <--- 打印出来确认一下
 echo "----------------------------------------------------------------"
 echo "🔧 Config Name  : $CONFIG_NAME"
 echo "🏷️  Exp Name     : $EXP_NAME"
+echo "⏭️  Downsample   : $DOWNSAMPLE (Fixed)"
 echo "🔢 MODE_FLAGS   : $MODE_FLAGS"
 echo "----------------------------------------------------------------"
 echo "🖥️  GPUs Used    : $GPU_COUNT (IDs: $CUDA_VISIBLE_DEVICES)"

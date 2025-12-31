@@ -12,4 +12,4 @@ uv run scripts/serve_policy.py \
     --port 8001 \
     policy:checkpoint \
     --policy.config="pi05_agiworld" \
-    --policy.dir="checkpoints/pi05_agiworld/formal_pi05_hsdp_4n8gA100_20251220_bs512_lr5e-5_step1000000/20000" \
+    --policy.dir="checkpoints/pi05_agiworld/formal_pi05_hsdp_4n8gA100_20251220_bs512_lr5e-5_step1000000/150000" \

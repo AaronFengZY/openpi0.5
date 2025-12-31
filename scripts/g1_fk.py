@@ -127,6 +127,9 @@ class G1_FK:
                                              data, z_offset)
         res["right_bbox"] = self._bbox_world(self._fid_right_bbox,
                                              data, z_offset)
+        
+        res["left_points"]  = self._points_world(self._fid_left_bbox, data, z_offset)
+        res["right_points"] = self._points_world(self._fid_right_bbox, data, z_offset)
 
         return res
 
@@ -139,6 +142,18 @@ class G1_FK:
                 return fid
         raise ValueError(f"Frame “{frame_name}” not found in reduced model.")
     
+    @staticmethod
+    def _points_world(frame_ids: list[int],
+                      data: pin.Data,
+                      z_offset: float = 0.0) -> np.ndarray:
+        """
+        Returns raw 3D points for the given frames.
+        Shape: (N, 3)
+        """
+        pts = np.array([data.oMf[fid].translation for fid in frame_ids])
+        pts[:, 2] -= z_offset
+        return pts
+
     @staticmethod
     def _bbox_world(frame_ids: list[int],
                     data: pin.Data,

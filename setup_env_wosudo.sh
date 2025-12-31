@@ -52,8 +52,8 @@ if command -v git >/dev/null 2>&1; then
   if ! git lfs version >/dev/null 2>&1; then
     echo "→ Installing Git LFS ..."
     if command -v apt-get >/dev/null 2>&1; then
-      sudo apt-get update -y
-      sudo apt-get install -y git-lfs
+      apt-get update -y
+      apt-get install -y git-lfs
     else
       echo "⚠️ apt-get not available; skipping git-lfs system install"
     fi

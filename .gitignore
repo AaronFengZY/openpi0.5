@@ -3,6 +3,7 @@ checkpoints/
 data/
 wandb/
 legacy/
+scripts/outputs/
 40G8-A100_mutlinodes.yaml
 40G8-A100.yaml
 80G4-A100_mutlinodes.yaml

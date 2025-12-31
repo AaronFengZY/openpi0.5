@@ -28,6 +28,18 @@ class AgiBotDataset(Dataset):
 
         self.JOINT_DIM = 14
         self.TOTAL_OUTPUT_DIM = 32
+
+        # =========================================================
+        # [新增] 读取 Action Interval (下采样步长)
+        # 默认为 1 (即不进行下采样)
+        # =========================================================
+        self.downsample_rate = int(os.getenv("AGIBOT_DOWNSAMPLE_RATE", 1))
+        logging.info(f"🚩 [AgiBotDataset] Downsample Rate (Stride): {self.downsample_rate}")       
+        
+        # 计算实际需要读取的物理帧长度
+        # 例如: horizon=30, interval=2 -> 需要读取 60 帧
+        # 这样采样出来才是: 0, 2, 4 ... 58 (共30个点)
+        self.effective_horizon_len = self.action_horizon * self.downsample_rate 
         
         env_index_file = os.getenv("AGIBOT_INDEX_FILE")
         if env_index_file:
@@ -209,8 +221,6 @@ class AgiBotDataset(Dataset):
                 return torch.zeros((224, 224, 3), dtype=torch.float32)
 
     def __getitem__(self, idx):
-
-
         # 1. 基础信息
         ep_idx, idx_in_seg = self._get_info_by_idx(idx)
         
@@ -247,7 +257,9 @@ class AgiBotDataset(Dataset):
         # 我们要读 [current, current + horizon]
         # 但必须限制在 total_file_length 以内，否则 load_range 里的 reshape 会报错
         read_start = current_abs_frame
-        read_end = min(current_abs_frame + self.action_horizon, total_file_length)
+        # read_end = min(current_abs_frame + self.action_horizon, total_file_length)
+
+        read_end = min(current_abs_frame + self.effective_horizon_len, total_file_length)
         
         # [修改 2] 使用 AgibotActionState 读取
         # 这是一个轻量级的 seek + read，非常快
@@ -281,15 +293,29 @@ class AgiBotDataset(Dataset):
         state_t_16 = np.concatenate([curr_joint, curr_gripper]) # (16,)
 
         # B. 未来 Actions (Delta/Abs)
-        # Future Joint (14) & Future Gripper (2)
-        future_joints = action_obj.state_joint_position
-        future_gripper = action_obj.action_effector_position
+        # 获取原始读取的序列
+        raw_future_joints = action_obj.state_joint_position
+        raw_future_gripper = action_obj.action_effector_position
+
+        sampled_future_joints = raw_future_joints[::self.downsample_rate]
+        sampled_future_gripper = raw_future_gripper[::self.downsample_rate]
+
+        joint_delta = sampled_future_joints - curr_joint
+
+
+        # # B. 未来 Actions (Delta/Abs)
+        # # Future Joint (14) & Future Gripper (2)
+        # future_joints = action_obj.state_joint_position
+        # future_gripper = action_obj.action_effector_position
         
-        # Delta Joint = Future - Current
-        joint_delta = future_joints - curr_joint
+        # # Delta Joint = Future - Current
+        # joint_delta = future_joints - curr_joint
         
         # Action = [Joint Delta (14), Gripper Abs (2)]
-        actions_16 = np.concatenate([joint_delta, future_gripper], axis=1) # (L, 16)
+        # actions_16 = np.concatenate([joint_delta, future_gripper], axis=1) # (L, 16)
+        # valid_len = actions_16.shape[0]
+
+        actions_16 = np.concatenate([joint_delta, sampled_future_gripper], axis=1) # (L_sampled, 16)
         valid_len = actions_16.shape[0]
 
         # ==========================================
@@ -304,11 +330,17 @@ class AgiBotDataset(Dataset):
         actions_final = torch.zeros((self.action_horizon, 32), dtype=torch.float32)
         actions_segment = torch.from_numpy(actions_16)
         
-        actions_final[:valid_len, :16] = actions_segment
+        # actions_final[:valid_len, :16] = actions_segment
         
+        copy_len = min(valid_len, self.action_horizon)
+        actions_final[:copy_len, :16] = actions_segment[:copy_len]
+
+
         # Repeat Padding (补齐不足 Horizon 的部分)
-        if valid_len < self.action_horizon:
-            actions_final[valid_len:, :16] = actions_segment[-1]
+        if copy_len < self.action_horizon:
+             # 如果完全没有数据，就保持0；否则复制最后一帧
+            if copy_len > 0:
+                actions_final[copy_len:, :16] = actions_segment[-1]
             
         action_is_pad = torch.zeros(self.action_horizon, dtype=torch.bool)
         action_is_pad[valid_len:] = True
@@ -362,6 +394,50 @@ class AgiBotDataset(Dataset):
             act_joint = torch.clamp(act_joint, -10.0, 10.0)
             actions_final[:, :VALID_DIMS_JOINT] = act_joint
 
+    #     print(f"\n" + "🔍" * 20)
+    #     print(f"[Debug Downsample] Global Index: {idx}")
+    #     print(f"  - Downsample Rate: {self.downsample_rate}")
+        
+    #     # 1. 验证形状
+    #     raw_len = raw_future_joints.shape[0]
+    #     sampled_len = sampled_future_joints.shape[0]
+    #     print(f"  - Raw Len: {raw_len} | Sampled Len: {sampled_len}")
+
+    #     # 2. 【核心】全量 Horizon 验证 (Check ALL 30 steps)
+    #     # 我们手动模拟一遍采样逻辑：从 raw 里面按步长取值
+    #     expected_sequence = raw_future_joints[::self.downsample_rate]
+        
+    #     # 对比实际采样的结果 vs 手动模拟的结果
+    #     # atol=1e-6 是为了忽略浮点数极微小的误差
+    #     is_full_match = np.allclose(sampled_future_joints, expected_sequence, atol=1e-6)
+        
+    #     print(f"  - 🔥 Full Horizon Match ({sampled_len} steps): {'✅ PERFECT' if is_full_match else '❌ MISMATCH'}")
+
+    #     if not is_full_match:
+    #         # 如果不匹配，找出是第几个点错了
+    #         diff = np.abs(sampled_future_joints - expected_sequence).sum(axis=1)
+    #         bad_indices = np.where(diff > 1e-6)[0]
+    #         print(f"    ⚠️ Mismatch found at indices: {bad_indices}")
+
+
+    #     # 3. 【直观】打印全部时间步映射关系
+    #     print(f"  - 🕵️‍♀️ Step-by-Step Mapping Check (ALL STEPS):")
+    #     print(f"    {'Step':<5} | {'Raw_Idx':<8} | {'Value (Dim 0)':<15} | {'Match?'}")
+    #     print(f"    {'-'*45}")
+        
+    #     # [修改这里] 去掉 min(5, ...)，直接用 sampled_len
+    #     for t in range(sampled_len):
+    #         raw_t = t * self.downsample_rate
+    #         val_sampled = sampled_future_joints[t][0]
+    #         val_raw = raw_future_joints[raw_t][0]
+    #         match_mark = "✅" if np.isclose(val_sampled, val_raw, atol=1e-6) else "❌"
+    #         print(f"    {t:<5} | {raw_t:<8} | {val_sampled:.6f}        | {match_mark}")
+
+    #     print("🔍" * 20 + "\n")
+    # # --- [调试代码结束] ---
+
+    #     while (True):
+    #         pass
 
         return {
             "head": img_head,
