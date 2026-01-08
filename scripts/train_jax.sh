@@ -40,7 +40,7 @@ BATCH_SIZE=${1:-64}
 ACTION=${2:-"resume"}  # Default action is resume
 
 # [修改] 直接赋值，不再从参数读取
-DOWNSAMPLE=2
+DOWNSAMPLE=1
 
 RESUME_EXP_NAME=${2:-""}
 NUM_WORKERS=64

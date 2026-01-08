@@ -548,7 +548,13 @@ async def run_client(args):
                     cv2.putText(canvas_pred, "Pred (Points)", (10,30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
                     
                     combined = np.hstack((canvas_gt, canvas_pred))
-                    video_writer.write(combined)
+                    # video_writer.write(combined)
+
+                    # =========== 修改开始 ===========
+                    # OpenCV VideoWriter 期望 BGR 格式，而你的 combined 是 RGB 格式
+                    combined_bgr = cv2.cvtColor(combined, cv2.COLOR_RGB2BGR)
+                    video_writer.write(combined_bgr)
+                    # =========== 修改结束 ===========
 
     # 4. 保存视频
     if video_writer:
