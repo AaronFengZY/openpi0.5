@@ -40,14 +40,14 @@ BATCH_SIZE=${1:-64}
 ACTION=${2:-"resume"}  # Default action is resume
 
 # [修改] 直接赋值，不再从参数读取
-DOWNSAMPLE=1
+DOWNSAMPLE=2
 
 RESUME_EXP_NAME=${2:-""}
 NUM_WORKERS=64
 
 WARMUP_STEPS=1000
 PEAK_LR=5e-5
-DECAY_LR=5e-5
+DECAY_LR=1e-5
 DECAY_STEPS=1000000  # 通常设为跟 NUM_TRAIN_STEPS 一样，或者更长
 
 NUM_TRAIN_STEPS=1000000
@@ -152,6 +152,20 @@ echo "----------------------------------------------------------------"
 echo "📈 WandB Name   : $WANDB_RUN_NAME"
 echo "================================================================"
 
+if [[ -n "$CHECKPOINT_DIR" ]]; then
+    # 情况 A: 环境变量已设置 (例如 /data/v-zhifeng/openpi/checkpoints)
+    # 直接使用物理路径，解决 Errno 18 问题
+    FINAL_CKPT_BASE_DIR="$CHECKPOINT_DIR"
+    echo "✅ Using environment-defined CHECKPOINT_DIR: $FINAL_CKPT_BASE_DIR"
+else
+    # 情况 B: 环境变量未设置
+    # 回退到默认值 ./checkpoints，但为了安全，我们获取它的绝对路径
+    # 注意：如果 ./checkpoints 是软链接，readlink -f 会解析到物理路径
+    DEFAULT_REL_PATH="$PROJECT_ROOT/checkpoints"
+    FINAL_CKPT_BASE_DIR=$(readlink -f "$DEFAULT_REL_PATH" 2>/dev/null || echo "$DEFAULT_REL_PATH")
+    echo "⚠️  CHECKPOINT_DIR not set. Defaulting to: $FINAL_CKPT_BASE_DIR"
+fi
+
 # ==============================================================================
 echo "🔧 Patching OpenPI DataLoader to allow multi-node..."
 
@@ -169,6 +183,7 @@ fi
 # Added --num_train_steps argument
 uv run "$SCRIPT_DIR/train_jax.py" "$CONFIG_NAME" \
     --exp_name "$EXP_NAME" \
+    --checkpoint_base_dir "$FINAL_CKPT_BASE_DIR" \
     --fsdp_devices "$LOCAL_GPU_COUNT" \
     --batch_size "$BATCH_SIZE" \
     --num_workers "$NUM_WORKERS" \
